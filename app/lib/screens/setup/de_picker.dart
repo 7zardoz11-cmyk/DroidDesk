@@ -128,7 +128,17 @@ class DEPickerScreen extends StatelessWidget {
                       final de = _desktops[index];
                       final selected = state.selectedDE == de.id;
                       return _buildDECard(de, selected, () {
-                            state.setSelectedDE(de.id);
+                            if (de.id == 'xfce4') {
+                              state.setSelectedDE(de.id);
+                            } else {
+                              ScaffoldMessenger.of(context).clearSnackBars();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Coming soon :)'),
+                                  backgroundColor: DroidTheme.warning,
+                                ),
+                              );
+                            }
                           })
                           .animate()
                           .fadeIn(
