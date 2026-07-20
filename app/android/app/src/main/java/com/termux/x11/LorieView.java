@@ -714,12 +714,10 @@ public class LorieView extends SurfaceView implements InputStub {
     }
 
     private void sendWindowChange() {
-        // REMOVED !connected() check to prevent deadlock.
-        // If we don't send a window change, the X server will deadlock waiting for the first client request!
-        // if (!connected()) {
-        //     Log.w("LorieView", "sendWindowChange called but not connected yet. Ignoring.");
-        //     return;
-        // }
+        // Send the first geometry as soon as the Surface is available. The
+        // native side retains it until the Binder-provided X connection is
+        // attached; delaying it makes a fresh server allocate its 1280x1024
+        // fallback framebuffer before it learns the phone's real size.
 
         String name;
         int framerate = (int) (getDisplay() != null ? getDisplay().getRefreshRate() : 30);

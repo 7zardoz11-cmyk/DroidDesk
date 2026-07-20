@@ -129,14 +129,7 @@ class ChrootRuntime(private val context: Context) {
             )
         }
 
-        // Sources list for Ubuntu 24.04
-        File(rootfsDir, "etc/apt/sources.list").writeText(
-            """
-            deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-            deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-            deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-            """.trimIndent().trim() + "\n"
-        )
+
 
         // Make sure apt works without _apt sandbox user
         File(rootfsDir, "etc/apt/apt.conf.d/99-disable-sandbox").writeText("APT::Sandbox::User \"root\";\n")
@@ -180,9 +173,14 @@ class ChrootRuntime(private val context: Context) {
                 onProgress(0.1, "Installing core tools...")
                 if (execChroot(
                     "DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends " +
-                            "locales ca-certificates wget curl dbus-x11",
+                            "locales ca-certificates wget curl dbus-x11 x11-utils",
                     onLog
                 ) != 0) throw IllegalStateException("Core package installation failed")
+
+                onProgress(0.15, "Installing Android kernel compatibility...")
+                if (!ensureCloseRangeCompatibility(onLog)) {
+                    throw IllegalStateException("Android kernel compatibility setup failed")
+                }
 
                 onProgress(0.2, "Installing Mesa GPU drivers...")
                 if (execChroot(
@@ -299,18 +297,14 @@ class ChrootRuntime(private val context: Context) {
             return
         }
 
-        if (desktopEnv == "xfce4") {
-            XfceMobileProfile.install(
-                context = context,
-                homeDir = File(rootfsDir, "root"),
-                wallpaperFile = File(
-                    rootfsDir,
-                    "usr/share/backgrounds/droiddesk/ubuntu-touch.jpg",
-                ),
-                wallpaperPathInSession =
-                    "/usr/share/backgrounds/droiddesk/ubuntu-touch.jpg",
-            )
+        // Existing rootfs installations predate the compatibility library.
+        // Build it once before starting XFCE so they do not need a reinstall.
+        if (!ensureCloseRangeCompatibility()) {
+            Log.e(TAG, "Cannot start chroot desktop: close_range compatibility setup failed")
+            return
         }
+
+        if (desktopEnv == "xfce4") installChrootXfceMobileProfile()
 
         ensureMounts()
         bindX11Socket()
@@ -331,20 +325,36 @@ class ChrootRuntime(private val context: Context) {
             export TMPDIR=/tmp
             export HOME=/root
             export PREFIX=/usr
-            export LD_PRELOAD=/usr/local/lib/libclose_range_hack.so
+            # This is a normal Ubuntu userspace, not the relocated native
+            # Termux runtime.  Load only the glibc compatibility shim built
+            # for this rooted Ubuntu filesystem.
+            export LD_PRELOAD=/usr/local/lib/libdroiddesk-close-range.so
 
             # Source DroidDesk environment
             . /etc/profile.d/droiddesk-ha.sh 2>/dev/null || true
 
-            # Session D-Bus
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/dbus-session
-            rm -f /tmp/dbus-session
-            dbus-daemon --session --address="${'$'}DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile
-
             # Make sure X11 socket dir exists in case bind mount was late
             mkdir -p /tmp/.X11-unix
 
+            # ── Wait for X server to be ready with the correct resolution ──
+            # The LorieView X server may still be initializing when the chroot
+            # process starts. Poll until the socket exists and xdpyinfo reports
+            # the phone's scaled resolution instead of the 1280x1024 fallback.
+            echo "DIAG: Waiting for X server on DISPLAY=:0 ..."
+            for attempt in ${'$'}(seq 1 50); do
+                if [ -e /tmp/.X11-unix/X0 ]; then
+                    current_res=${'$'}(xdpyinfo 2>/dev/null | grep 'dimensions:' | awk '{print ${'$'}2}')
+                    if [ -n "${'$'}current_res" ] && [ "${'$'}current_res" != "1280x1024" ]; then
+                        echo "DIAG: X server ready at ${'$'}current_res"
+                        break
+                    fi
+                fi
+                sleep 0.1
+            done
+
             echo "DIAG: Starting $desktopEnv in chroot on DISPLAY=:0 ..."
+            # dbus-run-session owns the one session bus for Xfce. Starting a
+            # second daemon here leaves Xfce components on different buses.
             exec dbus-run-session -- $deBin
         """.trimIndent()
 
@@ -370,6 +380,99 @@ class ChrootRuntime(private val context: Context) {
                 Log.d(TAG, "Chroot desktop output stream closed")
             }
         }.start()
+    }
+
+    /**
+     * Stage the profile as the app user, then copy it into the root-owned
+     * Ubuntu filesystem through su.  apt makes /root and /usr root-owned, so
+     * writing the profile directly from Kotlin fails on real rooted devices.
+     */
+    private fun installChrootXfceMobileProfile() {
+        val stagingDir = File(context.cacheDir, "droiddesk-xfce-profile")
+        val stagingHome = File(stagingDir, "root")
+        val stagingWallpaper = File(stagingDir, "ubuntu-touch.jpg")
+        val sessionWallpaper = "/usr/share/backgrounds/droiddesk/ubuntu-touch.jpg"
+
+        val staged = XfceMobileProfile.install(
+            context = context,
+            homeDir = stagingHome,
+            wallpaperFile = stagingWallpaper,
+            wallpaperPathInSession = sessionWallpaper,
+        )
+        if (!staged) {
+            Log.w(TAG, "Could not stage the XFCE mobile profile; starting with stock XFCE")
+            return
+        }
+
+        val chrootHome = File(rootfsDir, "root")
+        val chrootWallpaper = File(rootfsDir, sessionWallpaper.removePrefix("/"))
+        val command = """
+            set -e
+            mkdir -p ${shellQuote(chrootHome.absolutePath)}
+            mkdir -p ${shellQuote(chrootWallpaper.parentFile!!.absolutePath)}
+            cp -f ${shellQuote(stagingWallpaper.absolutePath)} ${shellQuote(chrootWallpaper.absolutePath)}
+            chmod 0644 ${shellQuote(chrootWallpaper.absolutePath)}
+            cp -R ${shellQuote(File(stagingHome, ".config").absolutePath)} ${shellQuote(chrootHome.absolutePath)}
+            chown -R 0:0 ${shellQuote(File(chrootHome, ".config").absolutePath)}
+        """.trimIndent()
+
+        try {
+            rootShell.exec(command)
+            if (!chrootWallpaper.exists()) {
+                Log.w(TAG, "XFCE wallpaper was not copied into the chroot")
+            }
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to install XFCE mobile profile into chroot", error)
+        }
+    }
+
+    /**
+     * Android 5.4-derived kernels reject Ubuntu glibc's close_range() call
+     * with EINVAL. GLib then cannot spawn any XFCE process. This tiny
+     * glibc-side preload returns ENOSYS instead, so GLib uses its own safe
+     * file-descriptor-walk fallback. It is only used inside the rooted Ubuntu
+     * chroot; Termux's Android-native runtime is unaffected.
+     */
+    private fun ensureCloseRangeCompatibility(onLog: (String) -> Unit = {}): Boolean {
+        val target = File(rootfsDir, "usr/local/lib/libdroiddesk-close-range.so")
+        if (target.exists()) return true
+
+        return try {
+            val stagingDir = File(context.cacheDir, "droiddesk-close-range").apply { mkdirs() }
+            val stagedSource = File(stagingDir, "close_range_compat.c")
+            context.assets.open("droiddesk/close_range_compat.c").use { input ->
+                stagedSource.outputStream().use(input::copyTo)
+            }
+
+            val sourceInRootfs = File(rootfsDir, "usr/local/src/droiddesk/close_range_compat.c")
+            rootShell.exec(
+                "mkdir -p ${shellQuote(sourceInRootfs.parentFile!!.absolutePath)} && " +
+                        "cp -f ${shellQuote(stagedSource.absolutePath)} ${shellQuote(sourceInRootfs.absolutePath)}"
+            )
+
+            onLog("Installing rooted-desktop compatibility support...\n")
+            if (execChroot(
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev",
+                    onLog,
+                ) != 0
+            ) return false
+
+            val buildCommand = """
+                set -e
+                mkdir -p /usr/local/lib /tmp/droiddesk-close-range-build
+                printf 'GLIBC_2.34 { global: close_range; };\n' > /tmp/droiddesk-close-range-build/version.map
+                gcc -shared -fPIC -O2 -Wl,--version-script=/tmp/droiddesk-close-range-build/version.map -o /usr/local/lib/libdroiddesk-close-range.so /usr/local/src/droiddesk/close_range_compat.c
+                chmod 0644 /usr/local/lib/libdroiddesk-close-range.so
+                rm -f /tmp/droiddesk-close-range-build/version.map
+                rmdir /tmp/droiddesk-close-range-build
+            """.trimIndent()
+            val built = execChroot(buildCommand, onLog) == 0
+            if (built) Log.i(TAG, "Installed rooted close_range compatibility library")
+            built
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to build rooted close_range compatibility library", error)
+            false
+        }
     }
 
     /**
@@ -494,6 +597,7 @@ class ChrootRuntime(private val context: Context) {
     private fun execChroot(command: String, onLog: (String) -> Unit = {}): Int {
         val wrapped = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; $command"
         val output = rootShell.exec("chroot ${rootfsDir.absolutePath} /bin/bash -c ${shellQuote(wrapped)}") { chunk ->
+            Log.d(TAG, "execChroot: ${chunk.trimEnd()}")
             onLog(chunk)
         }
         Log.d(TAG, "chroot command exit code: $output")
