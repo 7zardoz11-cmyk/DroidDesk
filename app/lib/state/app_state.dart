@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:droiddesk/services/platform_bridge.dart';
 
 /// Central state management for the entire DroidDesk app.
@@ -41,6 +42,10 @@ class AppState extends ChangeNotifier {
 
   // ── Error State ──
   String? _errorMessage;
+
+  // ── Auto Start ──
+  bool _autoStartDesktop = false;
+  bool get autoStartDesktop => _autoStartDesktop;
 
   // ── Getters ──
   bool get isBootstrapped => _isBootstrapped;
@@ -164,6 +169,9 @@ class AppState extends ChangeNotifier {
 
     await refreshStatus();
     await loadDeviceInfo();
+
+    final prefs = await SharedPreferences.getInstance();
+    _autoStartDesktop = prefs.getBool('autoStartDesktop') ?? false;
   }
 
   Future<void> refreshStatus() async {
@@ -211,6 +219,13 @@ class AppState extends ChangeNotifier {
     _setupStep = step;
     _errorMessage = null;
     notifyListeners();
+  }
+
+  Future<void> setAutoStartDesktop(bool value) async {
+    _autoStartDesktop = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('autoStartDesktop', value);
   }
 
   Future<bool> detectRootForSetup() async {

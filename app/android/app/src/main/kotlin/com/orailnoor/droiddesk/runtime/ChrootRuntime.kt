@@ -164,9 +164,12 @@ class ChrootRuntime(private val context: Context) {
             try {
                 onProgress(0.0, "Mounting rootfs...")
                 ensureMounts()
-
-                onProgress(0.05, "Updating package lists...")
-                if (execChroot("apt-get update -y", onLog) != 0) {
+                
+                onProgress(0.05, "Fixing Android network permissions...")
+                execChroot("groupadd -g 3003 inet 2>/dev/null || true; usermod -a -G inet _apt 2>/dev/null || true; usermod -a -G inet root 2>/dev/null || true", onLog)
+                
+                onProgress(0.05, "Updating package index...")
+                if (execChroot("DEBIAN_FRONTEND=noninteractive apt-get update", onLog) != 0) {
                     throw IllegalStateException("Package index update failed")
                 }
 
@@ -185,7 +188,7 @@ class ChrootRuntime(private val context: Context) {
                 onProgress(0.2, "Installing Mesa GPU drivers...")
                 if (execChroot(
                     "DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends " +
-                            "mesa-vulkan-drivers mesa-opencl-icd libgl1-mesa-dri libglx-mesa0 vulkan-tools",
+                            "mesa-vulkan-drivers mesa-opencl-icd libgl1-mesa-dri libglx-mesa0 libgl1 vulkan-tools",
                     onLog
                 ) != 0) Log.w(TAG, "Mesa packages unavailable; desktop will use available software rendering")
 
@@ -353,6 +356,17 @@ class ChrootRuntime(private val context: Context) {
             done
 
             echo "DIAG: Starting $desktopEnv in chroot on DISPLAY=:0 ..."
+            
+            # Ensure the cursor is an arrow instead of an X and scale its size
+            echo "Xcursor.size: 48" > ~/.Xresources
+            xrdb -merge ~/.Xresources 2>/dev/null || true
+            xsetroot -cursor_name left_ptr 2>/dev/null || true
+            
+            # Force window manager to run in case xfce4-session fails to start it
+            if [ "$desktopEnv" = "xfce4" ]; then
+                xfwm4 --replace &
+            fi
+
             # dbus-run-session owns the one session bus for Xfce. Starting a
             # second daemon here leaves Xfce components on different buses.
             exec dbus-run-session -- $deBin

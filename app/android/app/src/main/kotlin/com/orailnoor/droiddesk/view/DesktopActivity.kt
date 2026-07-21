@@ -19,6 +19,8 @@ import android.util.Log
 import android.widget.Toast
 import android.widget.Button
 import android.view.Gravity
+import android.view.KeyEvent
+import android.os.SystemClock
 import android.content.res.ColorStateList
 import com.termux.x11.MainActivity as TermuxMainActivity
 import com.termux.x11.LorieView
@@ -26,6 +28,10 @@ import com.orailnoor.droiddesk.runtime.LinuxRuntime
 import com.orailnoor.droiddesk.runtime.ChrootRuntime
 import com.orailnoor.droiddesk.x11.X11ServiceClient
 import com.orailnoor.droiddesk.x11.X11InputController
+import com.orailnoor.droiddesk.runtime.AndroidAppSync
+import java.io.File
+import java.io.BufferedReader
+import java.io.FileReader
 
 class DesktopActivity : Activity() {
     private var lorieView: LorieView? = null
@@ -43,6 +49,7 @@ class DesktopActivity : Activity() {
     private var controlOverlay: LinearLayout? = null
     private var collapsedControl: Button? = null
     private var surfaceCallback: SurfaceHolder.Callback? = null
+    private var intentListenerThread: Thread? = null
 
     companion object {
         private const val TAG = "DesktopActivity"
@@ -212,6 +219,33 @@ class DesktopActivity : Activity() {
             contentDescription = "Drag desktop controls"
             setPadding((8 * density).toInt(), 0, (8 * density).toInt(), 0)
         }
+
+        fun toggleButton(label: String, keyCode: Int) = controlButton(label).apply {
+            var active = false
+            setOnClickListener {
+                active = !active
+                backgroundTintList = ColorStateList.valueOf(
+                    if (active) Color.argb(255, 70, 130, 180) else Color.argb(220, 28, 38, 52)
+                )
+                val now = SystemClock.uptimeMillis()
+                val action = if (active) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
+                lorieView?.dispatchKeyEvent(KeyEvent(now, now, action, keyCode, 0))
+            }
+        }
+
+        fun clickButton(label: String, keyCode: Int) = controlButton(label).apply {
+            setOnClickListener {
+                val now = SystemClock.uptimeMillis()
+                lorieView?.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+                lorieView?.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+            }
+        }
+
+        val ctrlBtn = toggleButton("Ctrl", KeyEvent.KEYCODE_CTRL_LEFT)
+        val altBtn = toggleButton("Alt", KeyEvent.KEYCODE_ALT_LEFT)
+        val escBtn = clickButton("Esc", KeyEvent.KEYCODE_ESCAPE)
+        val tabBtn = clickButton("Tab", KeyEvent.KEYCODE_TAB)
+
         val keyboardButton = controlButton("Keyboard").apply {
             setOnClickListener { showKeyboard() }
         }
@@ -232,6 +266,18 @@ class DesktopActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(dragHandle, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, (42 * density).toInt(),
+            ))
+            addView(escBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, (42 * density).toInt(),
+            ))
+            addView(tabBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, (42 * density).toInt(),
+            ))
+            addView(ctrlBtn, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, (42 * density).toInt(),
+            ))
+            addView(altBtn, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, (42 * density).toInt(),
             ))
             addView(keyboardButton, LinearLayout.LayoutParams(
@@ -343,6 +389,12 @@ class DesktopActivity : Activity() {
             try {
                 if (sessionMode == "chroot") {
                     chrootRuntime.startSession(desktopEnv)
+                    
+                    // Setup Android App Integration
+                    val rootfsPath = chrootRuntime.getRootfsPath()
+                    chrootRuntime.executeCommand("mkdir -p /tmp && mkfifo /tmp/android_intent_pipe && chmod 666 /tmp/android_intent_pipe") {}
+                    AndroidAppSync.syncApps(this@DesktopActivity, rootfsPath)
+                    startIntentListener(rootfsPath)
                 } else {
                     linuxRuntime.startSession(desktopEnv, "x11")
                 }
@@ -357,6 +409,46 @@ class DesktopActivity : Activity() {
         Toast.makeText(this, "X11 Error: $message", Toast.LENGTH_LONG).show()
     }
 
+    private fun startIntentListener(rootfsPath: String) {
+        if (intentListenerThread != null) return
+        intentListenerThread = Thread({
+            val pipePath = "$rootfsPath/tmp/android_intent_pipe"
+            while (!Thread.currentThread().isInterrupted) {
+                try {
+                    val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "tail -f $pipePath"))
+                    BufferedReader(java.io.InputStreamReader(process.inputStream)).use { reader ->
+                        while (!Thread.currentThread().isInterrupted) {
+                            val packageName = reader.readLine() ?: break
+                            if (packageName.isNotBlank()) {
+                                launchAndroidApp(packageName.trim())
+                            }
+                        }
+                    }
+                    process.destroy()
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    Thread.sleep(1000)
+                }
+            }
+        }, "AndroidIntentListener")
+        intentListenerThread?.start()
+    }
+
+    private fun launchAndroidApp(packageName: String) {
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            if (launchIntent != null) {
+                Log.i(TAG, "Launching Android App: ${packageName}")
+                startActivity(launchIntent)
+            } else {
+                Log.w(TAG, "No launch intent found for package: $packageName")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch app $packageName", e)
+        }
+    }
+
     override fun onDestroy() {
         surfaceCallback?.let { callback -> lorieView?.holder?.removeCallback(callback) }
         surfaceCallback = null
@@ -364,6 +456,8 @@ class DesktopActivity : Activity() {
         inputController = null
         x11ServiceClient?.disconnect()
         x11ServiceClient = null
+        intentListenerThread?.interrupt()
+        intentListenerThread = null
         super.onDestroy()
     }
 }

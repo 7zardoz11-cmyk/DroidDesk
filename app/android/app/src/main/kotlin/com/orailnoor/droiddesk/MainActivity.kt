@@ -38,6 +38,19 @@ class MainActivity : FlutterActivity() {
         if (intent.getBooleanExtra("autoSetup", false)) {
             runAutoChrootSetup()
         }
+
+        // Auto-start desktop logic for when we are the Home Launcher
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val autoStart = prefs.getBoolean("flutter.autoStartDesktop", false)
+        if (autoStart && chrootRuntime.hasRoot() && chrootRuntime.isRootfsReady()) {
+            startForegroundService()
+            val desktopIntent = Intent(this, com.orailnoor.droiddesk.view.DesktopActivity::class.java).apply {
+                putExtra("startSession", true)
+                putExtra("mode", "chroot")
+                putExtra("de", "xfce4")
+            }
+            startActivity(desktopIntent)
+        }
     }
 
     /**
@@ -353,10 +366,10 @@ class MainActivity : FlutterActivity() {
                     var width = call.argument<Int>("width") ?: 1920
                     var height = call.argument<Int>("height") ?: 1080
 
-                    if (height > 720) {
-                        val scale = 720.0 / height
+                    if (height > 1080) {
+                        val scale = 1080.0 / height
                         width = (width * scale).toInt()
-                        height = 720
+                        height = 1080
                     }
 
                     startForegroundService()

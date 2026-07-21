@@ -7,7 +7,7 @@ import java.io.File
 /** Installs DroidDesk's touch-friendly Ubuntu-inspired XFCE defaults once per home. */
 object XfceMobileProfile {
     private const val TAG = "XfceMobileProfile"
-    private const val PROFILE_MARKER = ".droiddesk-xfce-mobile-v5"
+    private const val PROFILE_MARKER = ".droiddesk-xfce-mobile-v7"
     private const val WALLPAPER_ASSET = "droiddesk/ubuntu-touch-wallpaper.jpg"
 
     fun install(
@@ -134,8 +134,8 @@ object XfceMobileProfile {
               <property name="length" type="uint" value="100"/>
               <property name="position-locked" type="bool" value="true"/>
               <property name="autohide-behavior" type="uint" value="0"/>
-              <property name="size" type="uint" value="30"/>
-              <property name="icon-size" type="uint" value="20"/>
+              <property name="size" type="uint" value="45"/>
+              <property name="icon-size" type="uint" value="30"/>
               <property name="background-style" type="uint" value="1"/>
               <property name="background-rgba" type="array">
                 <value type="double" value="0.000000"/>
@@ -153,14 +153,14 @@ object XfceMobileProfile {
               </property>
             </property>
             <property name="panel-2" type="empty">
-              <property name="position" type="string" value="p=7;x=0;y=0"/>
-              <property name="mode" type="uint" value="1"/>
-              <property name="length" type="uint" value="100"/>
-              <property name="length-adjust" type="bool" value="false"/>
+              <property name="position" type="string" value="p=10;x=0;y=0"/>
+              <property name="mode" type="uint" value="0"/>
+              <property name="length" type="uint" value="1"/>
+              <property name="length-adjust" type="bool" value="true"/>
               <property name="position-locked" type="bool" value="true"/>
               <property name="autohide-behavior" type="uint" value="0"/>
-              <property name="size" type="uint" value="52"/>
-              <property name="icon-size" type="uint" value="36"/>
+              <property name="size" type="uint" value="72"/>
+              <property name="icon-size" type="uint" value="48"/>
               <property name="background-style" type="uint" value="1"/>
               <property name="background-rgba" type="array">
                 <value type="double" value="0.000000"/>
@@ -242,6 +242,9 @@ object XfceMobileProfile {
                 </property>
               </property>
             </property>
+          </property>
+          <property name="desktop-icons" type="empty">
+            <property name="icon-size" type="uint" value="72"/>
           </property>
         </channel>
     """.trimIndent() + "\n"

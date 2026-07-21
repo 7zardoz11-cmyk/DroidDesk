@@ -61,7 +61,7 @@ class X11InputController(private val lorieView: LorieView) {
         inputHandler.handleTouchEvent(lorieView, view, event)
 
     companion object {
-        const val DISPLAY_SCALE_PERCENT = 200
+        const val DISPLAY_SCALE_PERCENT = 150
 
         /** Must run before LorieView is measured so Xwayland starts at the scaled resolution. */
         fun configureDisplayScale() {

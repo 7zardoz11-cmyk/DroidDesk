@@ -428,6 +428,21 @@ class HomeScreen extends StatelessWidget {
                 Navigator.pop(context);
               },
             ),
+            StatefulBuilder(
+              builder: (context, setState) {
+                final state = context.watch<AppState>();
+                return SwitchListTile(
+                  activeColor: DroidTheme.primary,
+                  secondary: const Icon(Icons.rocket_launch, color: DroidTheme.primary),
+                  title: const Text('Auto-Start Linux Desktop'),
+                  subtitle: const Text('Launch instantly on boot/home screen'),
+                  value: state.autoStartDesktop,
+                  onChanged: (val) {
+                    state.setAutoStartDesktop(val);
+                  },
+                );
+              }
+            ),
             ListTile(
               leading: const Icon(Icons.refresh, color: DroidTheme.secondary),
               title: const Text('Reinstall Linux'),
