@@ -30,6 +30,38 @@ class MainActivity : FlutterActivity() {
     private lateinit var linuxRuntime: LinuxRuntime
     private lateinit var chrootRuntime: ChrootRuntime
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val logBuffer = StringBuffer()
+    private var lastLogFlushTime = 0L
+    private val logFlushRunnable = Runnable { flushLogBuffer() }
+
+    private fun flushLogBuffer() {
+        val text = synchronized(logBuffer) {
+            val t = logBuffer.toString()
+            logBuffer.setLength(0)
+            t
+        }
+        if (text.isNotEmpty()) {
+            flutterEngine?.dartExecutor?.binaryMessenger?.let { messenger ->
+                MethodChannel(messenger, CHANNEL).invokeMethod("onTerminalOutput", mapOf("text" to text))
+            }
+        }
+    }
+
+    private fun appendTerminalOutput(chunk: String) {
+        synchronized(logBuffer) {
+            logBuffer.append(chunk)
+            val now = System.currentTimeMillis()
+            if (now - lastLogFlushTime > 150) {
+                lastLogFlushTime = now
+                mainHandler.post(logFlushRunnable)
+            } else {
+                mainHandler.removeCallbacks(logFlushRunnable)
+                mainHandler.postDelayed(logFlushRunnable, 150)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         linuxRuntime = LinuxRuntime(this)
@@ -271,14 +303,7 @@ class MainActivity : FlutterActivity() {
                                     }
                                 },
                                 { logChunk ->
-                                    runOnUiThread {
-                                        flutterEngine.dartExecutor.binaryMessenger.let { messenger ->
-                                            MethodChannel(messenger, CHANNEL).invokeMethod(
-                                                "onTerminalOutput",
-                                                mapOf("text" to logChunk)
-                                            )
-                                        }
-                                    }
+                                    appendTerminalOutput(logChunk)
                                 }
                             )
                             latch.await()
@@ -294,10 +319,7 @@ class MainActivity : FlutterActivity() {
                     val desktopEnv = call.argument<String>("de") ?: "xfce4"
                     thread {
                         linuxRuntime.setInstallLogSink { chunk ->
-                            runOnUiThread {
-                                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-                                    .invokeMethod("onTerminalOutput", mapOf("text" to chunk))
-                            }
+                            appendTerminalOutput(chunk)
                         }
                         try {
                             val ok = linuxRuntime.installDesktopEnvironmentNative(
@@ -330,10 +352,7 @@ class MainActivity : FlutterActivity() {
                     val appId = call.argument<String>("appId") ?: ""
                     thread {
                         val logSink: (String) -> Unit = { chunk ->
-                            runOnUiThread {
-                                MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-                                    .invokeMethod("onTerminalOutput", mapOf("text" to chunk))
-                            }
+                            appendTerminalOutput(chunk)
                         }
                         val progressSink: (Double, String) -> Unit = { progress, status ->
                             runOnUiThread {
@@ -448,19 +467,11 @@ class MainActivity : FlutterActivity() {
                     Thread {
                         val output = if (chrootRuntime.hasRoot()) {
                             chrootRuntime.executeCommand(command) { chunk ->
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    flutterEngine.dartExecutor.binaryMessenger.let { messenger ->
-                                        MethodChannel(messenger, CHANNEL).invokeMethod("onTerminalOutput", mapOf("text" to chunk))
-                                    }
-                                }
+                                appendTerminalOutput(chunk)
                             }
                         } else {
                             linuxRuntime.executeCommand(command) { chunk ->
-                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                    flutterEngine.dartExecutor.binaryMessenger.let { messenger ->
-                                        MethodChannel(messenger, CHANNEL).invokeMethod("onTerminalOutput", mapOf("text" to chunk))
-                                    }
-                                }
+                                appendTerminalOutput(chunk)
                             }
                         }
                         android.os.Handler(android.os.Looper.getMainLooper()).post {

@@ -29,7 +29,6 @@ class _DroidDeskAppState extends State<DroidDeskApp> {
   @override
   void initState() {
     super.initState();
-    // Initialize platform bridge and load state
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().initialize();
     });
@@ -43,7 +42,6 @@ class _DroidDeskAppState extends State<DroidDeskApp> {
       theme: DroidTheme.themeData,
       home: Consumer<AppState>(
         builder: (context, state, _) {
-          // Route to setup wizard or home based on bootstrap state
           if (state.isSetupComplete) {
             return const HomeScreen();
           }

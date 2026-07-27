@@ -7,7 +7,7 @@ import java.io.File
 /** Installs DroidDesk's touch-friendly Ubuntu-inspired XFCE defaults once per home. */
 object XfceMobileProfile {
     private const val TAG = "XfceMobileProfile"
-    private const val PROFILE_MARKER = ".droiddesk-xfce-mobile-v7"
+    private const val PROFILE_MARKER = ".droiddesk-xfce-mobile-v9"
     private const val WALLPAPER_ASSET = "droiddesk/ubuntu-touch-wallpaper.jpg"
 
     fun install(
@@ -33,6 +33,8 @@ object XfceMobileProfile {
             File(xfconfDir, "xfce4-desktop.xml").writeText(
                 desktopConfig(xmlEscape(wallpaperPathInSession)),
             )
+            File(xfconfDir, "xsettings.xml").writeText(xsettingsConfig())
+            File(xfconfDir, "xfwm4.xml").writeText(xfwm4Config())
             installPanelCss(homeDir)
 
             val panelDir = File(homeDir, ".config/xfce4/panel")
@@ -244,7 +246,14 @@ object XfceMobileProfile {
             </property>
           </property>
           <property name="desktop-icons" type="empty">
+            <property name="style" type="int" value="0"/>
             <property name="icon-size" type="uint" value="72"/>
+            <property name="file-icons" type="empty">
+              <property name="show-home" type="bool" value="false"/>
+              <property name="show-filesystem" type="bool" value="false"/>
+              <property name="show-trash" type="bool" value="false"/>
+              <property name="show-removable" type="bool" value="false"/>
+            </property>
           </property>
         </channel>
     """.trimIndent() + "\n"
@@ -254,4 +263,37 @@ object XfceMobileProfile {
         .replace("\"", "&quot;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+
+    private fun xsettingsConfig(): String = """
+        <?xml version="1.1" encoding="UTF-8"?>
+
+        <channel name="xsettings" version="1.0">
+          <property name="Xft" type="empty">
+            <property name="DPI" type="int" value="140"/>
+            <property name="Antialias" type="int" value="1"/>
+            <property name="HintStyle" type="string" value="hintslight"/>
+            <property name="RGBA" type="string" value="rgb"/>
+          </property>
+          <property name="Net" type="empty">
+            <property name="ThemeName" type="string" value="Adwaita"/>
+            <property name="IconThemeName" type="string" value="Papirus"/>
+            <property name="CursorSize" type="int" value="32"/>
+          </property>
+          <property name="Gtk" type="empty">
+            <property name="CursorThemeSize" type="int" value="32"/>
+            <property name="FontName" type="string" value="Sans 12"/>
+          </property>
+        </channel>
+    """.trimIndent() + "\n"
+
+    private fun xfwm4Config(): String = """
+        <?xml version="1.1" encoding="UTF-8"?>
+
+        <channel name="xfwm4" version="1.0">
+          <property name="general" type="empty">
+            <property name="title_font" type="string" value="Sans Bold 11"/>
+            <property name="theme" type="string" value="Default"/>
+          </property>
+        </channel>
+    """.trimIndent() + "\n"
 }

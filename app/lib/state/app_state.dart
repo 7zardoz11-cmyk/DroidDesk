@@ -172,6 +172,11 @@ class AppState extends ChangeNotifier {
 
     final prefs = await SharedPreferences.getInstance();
     _autoStartDesktop = prefs.getBool('autoStartDesktop') ?? false;
+
+    if (_autoStartDesktop && isSetupComplete && !_isRunning) {
+      // Auto-start desktop when the app (launcher) boots up
+      startLinux(mode: 'x11');
+    }
   }
 
   Future<void> refreshStatus() async {
