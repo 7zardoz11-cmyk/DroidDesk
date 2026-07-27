@@ -150,7 +150,6 @@ class DEPickerScreen extends StatelessWidget {
                   ),
                 ),
 
-                // ── Navigation ──
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 24),
                   child: Row(
