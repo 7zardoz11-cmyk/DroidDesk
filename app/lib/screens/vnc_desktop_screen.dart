@@ -92,12 +92,12 @@ class _VncDesktopScreenState extends State<VncDesktopScreen> {
                     );
                   }
 
-                  return RemoteFrameBufferWidget(
-                    key: ValueKey(_retryKey),
-                    hostName: '127.0.0.1',
-                    port: 5900,
-                    password: 'password',
-                    inputMode: _inputMode,
+                    return RemoteFrameBufferWidget(
+                      key: ValueKey(_retryKey),
+                      hostName: '127.0.0.1',
+                      port: 5901,
+                      password: '123456',
+                      inputMode: _inputMode,
                     trackpadSensitivity: _trackpadSensitivity,
                     connectingWidget: Column(
                       mainAxisAlignment: MainAxisAlignment.center,

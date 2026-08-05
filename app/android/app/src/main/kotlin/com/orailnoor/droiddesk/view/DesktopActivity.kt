@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.graphics.Color
 import android.view.Window
 import android.view.WindowManager
+import android.view.SurfaceHolder
 import android.widget.FrameLayout
 import android.os.Handler
 import android.os.Looper
@@ -14,11 +15,19 @@ import java.io.File
 import com.termux.x11.MainActivity as TermuxMainActivity
 import com.termux.x11.LorieView
 import com.termux.x11.CmdEntryPoint
+import com.orailnoor.droiddesk.runtime.LinuxRuntime
+import com.orailnoor.droiddesk.runtime.ChrootRuntime
 
 class DesktopActivity : Activity() {
     private var lorieView: LorieView? = null
     private var isX11Started = false
     private var isSetupDone = false
+    private var shouldStartSession = false
+    private var sessionMode = "termux"
+    private var desktopEnv = "xfce4"
+    private lateinit var linuxRuntime: LinuxRuntime
+    private lateinit var chrootRuntime: ChrootRuntime
+    private lateinit var placeholder: FrameLayout
 
     companion object {
         private const val TAG = "DesktopActivity"
@@ -26,6 +35,12 @@ class DesktopActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        linuxRuntime = LinuxRuntime(this)
+        chrootRuntime = ChrootRuntime(this)
+        shouldStartSession = intent.getBooleanExtra("startSession", false)
+        sessionMode = intent.getStringExtra("mode") ?: if (chrootRuntime.hasRoot()) "chroot" else "termux"
+        desktopEnv = intent.getStringExtra("de") ?: "xfce4"
+
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         window.setFlags(
             WindowManager.LayoutParams.FLAG_FULLSCREEN,
@@ -33,31 +48,19 @@ class DesktopActivity : Activity() {
         )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // CRITICAL: Do NOT create LorieView here. Use a plain placeholder.
-        // This ensures onCreate is ultra-fast so the focus event is processed
-        // before the 5-second ANR timeout.
-        val placeholder = FrameLayout(this)
-        placeholder.setBackgroundColor(Color.BLACK)
+        placeholder = FrameLayout(this)
+        placeholder.setBackgroundColor(Color.RED)
         setContentView(placeholder)
 
-        Log.i(TAG, "DesktopActivity created with placeholder view")
+        Log.i(TAG, "DesktopActivity created mode=$sessionMode startSession=$shouldStartSession")
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && !isSetupDone) {
             isSetupDone = true
-            Log.i(TAG, "Window focused — scheduling LorieView setup")
-
-            // Set up the view immediately
+            Log.i(TAG, "Window focused — setting up LorieView")
             setupLorieView()
-
-            // Wait 500ms to ensure the Android SurfaceView is fully attached,
-            // measured, and its native surface (surfaceChanged) is created.
-            // Connecting XCB before the surface exists causes a silent native failure.
-            Handler(Looper.getMainLooper()).postDelayed({
-                startNativeX11()
-            }, 500)
         }
     }
 
@@ -65,50 +68,87 @@ class DesktopActivity : Activity() {
         Log.i(TAG, "Setting up LorieView")
         TermuxMainActivity.getInstance().initLorieView(this)
         lorieView = TermuxMainActivity.getInstance().lorieView
-        lorieView!!.setBackgroundColor(Color.TRANSPARENT)
-        
-        // Force the SurfaceView to composite ON TOP of the Activity window.
-        // This guarantees that even if the Android window has a black background
-        // or failed to punch a hole for the SurfaceView, the X11 surface will 
-        // be visible over everything.
+
+        // Restore setZOrderOnTop to see if the SurfaceView is transparent
         lorieView!!.setZOrderOnTop(true)
-        
-        setContentView(lorieView)
-        Log.i(TAG, "LorieView set as content view")
+        placeholder.setBackgroundColor(Color.BLUE)
+
+        val params = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        placeholder.addView(lorieView, params)
+        Log.i(TAG, "LorieView added to placeholder")
+
+        // Start X server only after the Surface is actually created/changed.
+        lorieView!!.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                Log.i(TAG, "LorieView surfaceCreated")
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                Log.i(TAG, "LorieView surfaceChanged ${width}x${height}")
+                synchronized(this@DesktopActivity) {
+                    if (!isX11Started && !LorieView.connected()) {
+                        isX11Started = true
+                        startNativeX11()
+                    }
+                }
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                Log.i(TAG, "LorieView surfaceDestroyed")
+                synchronized(this@DesktopActivity) {
+                    isX11Started = false
+                }
+            }
+        })
     }
 
     private fun startNativeX11() {
-        if (isX11Started || LorieView.connected()) {
+        if (LorieView.connected()) {
             lorieView?.requestFocus()
             return
         }
-        isX11Started = true
 
-        Thread {
+        val xServerThread = android.os.HandlerThread("XServerThread")
+        xServerThread.start()
+        Handler(xServerThread.looper).post {
             try {
-                val tmpDir = File(filesDir, "tmp")
-                tmpDir.mkdirs()
-
-                val x11Dir = File(tmpDir, ".X11-unix")
+                val appTmpDir = File(filesDir, "tmp").apply { mkdirs() }
+                val x11Dir = File(appTmpDir, ".X11-unix")
                 x11Dir.mkdirs()
 
-                Os.setenv("TMPDIR", tmpDir.absolutePath, true)
-                Os.setenv("PREFIX", "", true)
+                // Set X server environment before starting CmdEntryPoint
+                Os.setenv("TMPDIR", appTmpDir.absolutePath, true)
+                Os.setenv("XDG_RUNTIME_DIR", appTmpDir.absolutePath, true)
+                Os.setenv("PREFIX", File(filesDir, "usr").absolutePath, true)
                 Os.setenv("HOME", filesDir.absolutePath, true)
 
-                val xkbRoot = File(filesDir, "rootfs/usr/share/X11/xkb")
+                var xkbRoot = File(filesDir, "usr/share/X11/xkb")
+                if (!xkbRoot.exists()) {
+                    xkbRoot = File(filesDir, "rootfs/usr/share/X11/xkb")
+                }
                 if (xkbRoot.exists()) {
                     Os.setenv("XKB_CONFIG_ROOT", xkbRoot.absolutePath, true)
+                } else {
+                    Log.w(TAG, "xkb config root not found at ${xkbRoot.absolutePath}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set environment", e)
             }
 
-            Log.i(TAG, "Starting X server with :0 -nolock")
+            // Clean up any stale socket from previous runs
+            val appTmpDir = File(filesDir, "tmp")
+            val oldSocket = File(appTmpDir, ".X11-unix/X0")
+            if (oldSocket.exists()) {
+                oldSocket.delete()
+                Log.i(TAG, "Deleted stale X11 socket file")
+            }
 
-            Looper.prepare()
+            Log.i(TAG, "Starting X server with :0 -nolock -extension MIT-SHM")
 
-            val success = CmdEntryPoint.start(arrayOf(":0", "-nolock"))
+            val success = CmdEntryPoint.start(arrayOf(":0", "-nolock", "-extension", "MIT-SHM", "-nogpu"))
             Log.i(TAG, "X server start returned: $success")
 
             if (success) {
@@ -116,43 +156,51 @@ class DesktopActivity : Activity() {
                 val fd = cmdEntryPoint.xConnection
                 val logcatFd = cmdEntryPoint.logcatOutput
 
-                // Prevent X server from deadlocking by consuming its log output pipe!
-                if (logcatFd != null) {
-                    Thread {
-                        try {
-                            val reader = java.io.BufferedReader(java.io.InputStreamReader(java.io.FileInputStream(logcatFd.fileDescriptor)))
-                            while (true) {
-                                val line = reader.readLine() ?: break
-                                Log.d("Xlorie-Internal", line)
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error reading X server logs", e)
-                        }
-                    }.start()
-                }
+                // Let libXlorie handle the logcat output natively
+                // (Java reading thread removed)
 
                 if (fd != null) {
-                    // Only the UI callbacks and JNI calls that expect the main thread's JNIEnv
-                    // can be posted to the main thread.
+                    val rawFd = fd.detachFd()
+                    
+                    val rawLogcatFd = logcatFd?.detachFd() ?: -1
+                    
                     Handler(Looper.getMainLooper()).post {
                         try {
-                            LorieView.connect(fd.detachFd())
-                            Log.i(TAG, "LorieView connected on main thread!")
+                            LorieView.connect(rawFd)
+                            if (rawLogcatFd != -1) {
+                                LorieView.startLogcat(rawLogcatFd)
+                            }
+                            Log.i(TAG, "LorieView connect and startLogcat called on MAIN thread!")
                             
+                            // Trigger callback immediately without sleeping to avoid deadlock!
                             lorieView?.triggerCallback()
                             lorieView?.requestFocus()
-                            Log.i(TAG, "LorieView focused!")
+                            Log.i(TAG, "LorieView focused and viewport updated after connection!")
+                            
+                            // Start the desktop session now that the X server is ready
+                            if (shouldStartSession) {
+                                shouldStartSession = false
+                                Thread {
+                                    Log.i(TAG, "Starting Linux desktop session after X server ready")
+                                    if (sessionMode == "chroot") {
+                                        chrootRuntime.startSession(desktopEnv)
+                                    } else {
+                                        linuxRuntime.startSession(desktopEnv, "x11")
+                                    }
+                                }.start()
+                            }
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to connect LorieView", e)
                         }
                     }
                 } else {
                     Log.e(TAG, "getXConnection returned null")
+                    Handler(Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(this@DesktopActivity, "X11 Error: getXConnection null", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
-
-                Looper.loop()
             }
-        }.start()
+        }
     }
 
     override fun onDestroy() {
